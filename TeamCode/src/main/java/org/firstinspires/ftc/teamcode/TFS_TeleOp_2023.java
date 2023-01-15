@@ -244,13 +244,25 @@ public class TFS_TeleOp_2023 extends LinearOpMode
             if (gamepad1.a) {
                 if (!isInAuto){
                     isInAuto = true;
-                    telePickupFromSubStation();
+                    scanextend(26);
+                    isInAuto = false;
+
+                    //telePickupFromSubStation();
                 }//Threaded Task
             }
             if(gamepad2.a){
                 if (!isInAuto){
                     isInAuto = true;
                     claw_Scan();
+                    arm_liftThread = new Arm_Lift_PositionThread( -48,0.6, 0);
+                    arm_liftThread.start();
+                    scanJunction = new ScanJunctionThread();
+                    scanJunction.start();
+                    while (arm_liftThread.isAlive() || scanJunction.isAlive() ) idle();
+                    telemetry.addData("Scanthread:",scanJunction.isAlive() );
+                    telemetry.addData("finished","");
+                    telemetry.update();
+                    isInAuto = false;
                 }
 
             }
@@ -442,10 +454,10 @@ public class TFS_TeleOp_2023 extends LinearOpMode
                 telemetry.addData("Controller1 Speed", control1SpeedFactor);
                 telemetry.addData("Controller2 Speed", control2SpeedFactor);
                 telemetry.addData("FrontLeft Wheel Pos", LFMotor.getCurrentPosition());
+                telemetry.addData("pan pos",getArmPanPosition());
                 telemetry.addData("right:", String.format("%.01f mm", rightd.getDistance(DistanceUnit.MM)));
                 telemetry.addData("left:", String.format("%.01f mm", leftd.getDistance(DistanceUnit.MM)));
                 telemetry.addData("center:", String.format("%.01f mm", centerd .getDistance(DistanceUnit.MM)));
-
                 telemetry.update();
             }
             sleep(50);
@@ -503,9 +515,9 @@ public class TFS_TeleOp_2023 extends LinearOpMode
             ClawServo_Left.setDirection(Servo.Direction.REVERSE);
 
             arm_extendSwitch = hardwareMap.get(TouchSensor.class,"Touch");
-            leftd = hardwareMap.get(DistanceSensor.class, "Left_D");
+            rightd = hardwareMap.get(DistanceSensor.class, "Left_D");
             centerd = hardwareMap.get(DistanceSensor.class, "Center_D");
-            rightd = hardwareMap.get(DistanceSensor.class, "Right_D");
+            leftd = hardwareMap.get(DistanceSensor.class, "Right_D");
             // Set up the parameters with which we will use our IMU. Note that integration
             // algorithm here just reports accelerations to the logcat log; it doesn't actually
             // provide positional information.
@@ -918,6 +930,18 @@ public class TFS_TeleOp_2023 extends LinearOpMode
             scanFlag = true;
             scanCone.start();
         }
+        public void scanextend(double targetdis){
+            if(scanJunction.isFoundJunction()&&targetdis<60){
+                double middleDis = centerd.getDistance(DistanceUnit.MM) - 22;
+                double diffrence = (middleDis-targetdis)/1000 ;
+                telemetry.addData("dis",diffrence);
+                telemetry.update();
+                arm_extendThread = new Arm_Extend_PositionThread(getArmExtendPosition()+diffrence, 0.9, 0);
+                arm_extendThread.start();
+            }
+
+
+        }
 
 /*********************** Thread Classes ********************/
         private class routineTaskThread extends Thread        {
@@ -1218,6 +1242,7 @@ void telePickupFromSubStation( ){
                        telemetry.addData("hLeftDis", "%.2f", leftd.getDistance(DistanceUnit.MM));
                        telemetry.addData("hRightDis", "%.2f", rightd.getDistance(DistanceUnit.MM));
                        telemetry.addData("cone detected",foundCone);
+
                         telemetry.update();
                 }
                 isInAuto = false;
@@ -1253,8 +1278,7 @@ void telePickupFromSubStation( ){
             Arm_lift_Right_Motor.setPower(0);
             Arm_ExtendMotor.setPower(0);
         }
-        private class ScanJunctionThread extends Thread
-        {
+        private class ScanJunctionThread extends Thread {
             public boolean runningFlag = false;
             public boolean resetFlag = false;
 
@@ -1263,80 +1287,100 @@ void telePickupFromSubStation( ){
             private double middleDis = 2000;
             private final double DETECT_DIS = 250; // 50cm = 0.5m
 
-            private double scanServoAngle = 0;
+            private double scanAngle = 0;
             private boolean foundJunction = false;
 
-            public ScanJunctionThread()
-            {
-                scanServoAngle = getArmPanPosition();
+            public ScanJunctionThread() {
+                scanAngle = getArmPanPosition();
                 runningFlag = true;
                 foundJunction = false;
                 scanFlag = true;
             }
 
             @Override
-            public void run()
-            {
-                double ctrlValue = 0;
-                scanServoAngle = getArmPanPosition();
-                double scanServoStep = 10;
+            public void run() {
+                scanAngle = getArmPanPosition();
+                double scanStep = 2;
                 boolean scanDir = true;
-                double scanStopAngle = 50;
-                // now scan +/- 15 degree
-                double scanHigh = scanServoAngle + 15;
-                scanHigh = scanHigh > 50 ? 50 : scanHigh;
 
-                double scanLow = scanServoAngle - 15;
-                scanLow = scanLow < -90 ? -90 : scanLow;
+                double scanHigh = scanAngle + 15;
+                scanHigh = scanHigh > 60 ? 60 : scanHigh;
 
-                while(opModeIsActive() && runningFlag)
-                {
-                    leftDis = leftd.getDistance(DistanceUnit.MM);
-                    middleDis = centerd.getDistance(DistanceUnit.MM);
-                    rightDis = rightd.getDistance(DistanceUnit.MM);
+                double scanLow = scanAngle - 15;
+                scanLow = scanLow < 35 ? 35 : scanLow;
 
-                    if (leftDis > DETECT_DIS && rightDis > DETECT_DIS && middleDis > DETECT_DIS){
-                        if (scanDir) {
-                            scanServoAngle += scanServoStep;
-                            if (scanServoAngle > scanHigh) {
-                                scanServoAngle = 50;
-                                scanDir = false;
-                            }
-                        } else {
-                            scanServoAngle -= scanServoStep;
-                            if (scanServoAngle < scanLow) {
-                                scanServoAngle = -90;
-                                scanDir = true;
+                while (opModeIsActive() && runningFlag && !foundJunction) {
+                    leftDis = leftd.getDistance(DistanceUnit.MM) - 27;
+                    middleDis = centerd.getDistance(DistanceUnit.MM) - 22;
+                    rightDis = rightd.getDistance(DistanceUnit.MM) - 24;
 
-                            }
-                        }
-                    }
-                    else  if (leftDis < middleDis && leftDis < DETECT_DIS){
-                        scanServoAngle = scanServoAngle - 3;
-
-                    }else if(rightDis < middleDis && rightDis < DETECT_DIS){
-                        scanServoAngle = scanServoAngle + 3;
-                    }
-                    arm_panThread = new Arm_Pan_PositionThread(scanServoAngle, 0.6,0);
-                    arm_panThread.start();
-                    if(middleDis < leftDis && middleDis < rightDis && middleDis < DETECT_DIS)
-                    {
+                    if (middleDis < leftDis && middleDis < rightDis && middleDis < DETECT_DIS) {
                         foundJunction = true;
                     }
-                    isInAuto = false;
+                    else if (leftDis < middleDis && leftDis < DETECT_DIS) {
+                        scanAngle = scanAngle + 3;
+                        arm_panThread = new Arm_Pan_PositionThread(scanAngle, 0.6, 0);
+                        arm_panThread.start();
+                        while (arm_panThread.isAlive()) idle();
+                        foundJunction = true;
+                    }
+                    else if (rightDis < middleDis && rightDis < DETECT_DIS) {
+                        scanAngle = scanAngle - 3;
+                        arm_panThread = new Arm_Pan_PositionThread(scanAngle, 0.6, 0);
+                        arm_panThread.start();
+                        while (arm_panThread.isAlive()) idle();
+                        foundJunction = true;
+                    }
+                    else{
+                        if (scanDir) {
+                            scanAngle += scanStep;
+                            if (scanAngle > scanHigh) {
+                                telemetry.addData("off left","");
+                                telemetry.update();
+                                scanAngle = 60;
+                                scanDir = false;
+                            }
+                            arm_panThread = new Arm_Pan_PositionThread(scanAngle, 0.6, 0);
+                            arm_panThread.start();
+                            while (arm_panThread.isAlive()) idle();
+                        } else {
+                            scanAngle -= scanStep;
+                            if (scanAngle < scanLow) {
+                                telemetry.addData("off right","");
+                                telemetry.update();
+                                scanAngle = 35;
+                                scanDir = true;
+                            }
+                            arm_panThread = new Arm_Pan_PositionThread(scanAngle, 0.6, 0);
+                            arm_panThread.start();
+                            while (arm_panThread.isAlive()) idle();
+                        }
+
+                    }
+
 
 
                 }
+
+                telemetry.addData("Angle", scanAngle);
+                telemetry.addData("right:", String.format("%.01f mm", rightd.getDistance(DistanceUnit.MM)));
+                telemetry.addData("left:", String.format("%.01f mm", leftd.getDistance(DistanceUnit.MM)));
+                telemetry.addData("center:", String.format("%.01f mm", centerd.getDistance(DistanceUnit.MM)));
+                telemetry.update();
+
             }
 
-            public boolean isFoundJunction(){
+
+            public boolean isFoundJunction() {
                 return foundJunction;
             }
-            public void stopScan(){
+
+            public void stopScan() {
                 runningFlag = false;
                 scanFlag = false;
             }
         }
-
-
     }
+
+
+
